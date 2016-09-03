@@ -1,3 +1,6 @@
+# UNTESTED
+# PLEASE COPY AND PASTE EACH AREA FOR FURTHER TESTING AND SUBMIT ISSUES!
+
 # Update Resolve Servers
 echo "nameserver 8.8.8.8" > /etc/resolv.conf
 echo "nameserver 8.8.4.4" >> /etc/resolv.conf
@@ -10,7 +13,7 @@ IP="$(curl icanhazip.com)"
 # Install Prerequisites
 mkdir -p /opt/
 yum -y update
-yum -y install wget git epel-release curl
+yum -y install wget git epel-release curl mlocate
 
 # Disable SELinux
 sed -i /etc/selinux/config -r -e 's/^SELINUX=.*/SELINUX=disabled/g'
@@ -60,14 +63,175 @@ make install
 cp /opt/transmission/daemon/transmission-daemon.service /etc/systemd/system/transmission-daemon.service
 
 # Install Nginx Proxy
+# https://forums.plex.tv/discussion/158526/nginx-reverse-proxy
 yum -y install nginx
+cd  /etc/nginx/
+
+cat > nginx.conf << eof
+server {
+    listen 80;
+    server_name domain.net, 127.0.0.1;
+    rewrite ^ https://$http_host$request_uri? permanent;    # force redirect http to https
+}
+
+server {
+        listen 443;
+        #ssl on;
+        #ssl_certificate C:/nginx-1.6.3/conf/ssl/ssl-bundle.crt;        # path to ssl certificate
+        #ssl_certificate_key C:/nginx-1.6.3/conf/ssl/server.key;    # path to private key
+
+        server_name domain.net, 127.0.0.1;
+
+        proxy_set_header X-Forwarded-For $remote_addr;
+
+        add_header Strict-Transport-Security "max-age=31536000; includeSubdomains";
+        server_tokens off;
+
+
+        location = / {
+            rewrite ^ https://$http_host$request_uri/cloud permanent; #root access redirects to cloud
+        }
+
+        location /plex {
+            proxy_pass http://127.0.0.1:32400/web/;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        }
+
+        location /couchpotato {
+            proxy_pass http://127.0.0.1:5050;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        }
+
+        location /cloud {
+            fastcgi_pass    127.0.0.1:8000;
+            fastcgi_param   SCRIPT_FILENAME     $document_root$fastcgi_script_name;
+            fastcgi_param   PATH_INFO           $fastcgi_script_name;
+
+            fastcgi_param   SERVER_PROTOCOL        $server_protocol;
+            fastcgi_param   QUERY_STRING        $query_string;
+            fastcgi_param   REQUEST_METHOD      $request_method;
+            fastcgi_param   CONTENT_TYPE        $content_type;
+            fastcgi_param   CONTENT_LENGTH      $content_length;
+            fastcgi_param   SERVER_ADDR         $server_addr;
+            fastcgi_param   SERVER_PORT         $server_port;
+            fastcgi_param   SERVER_NAME         $server_name;
+            fastcgi_param   HTTPS               on;
+            fastcgi_param   HTTP_SCHEME         https;
+
+            access_log      logs/seahub.access.log;
+            error_log       logs/seahub.error.log;
+        }
+
+        location /seafhttp {
+            rewrite ^/seafhttp(.*)$ $1 break;
+            proxy_pass http://127.0.0.1:8082;
+            client_max_body_size 0;
+            proxy_connect_timeout  36000s;
+            proxy_read_timeout  36000s;
+        }
+
+        location /seafmedia {
+         rewrite ^/seafmedia(.*)$ /media$1 break;
+         root C:/Seafile/seafile-server-4.0.6/seahub;
+        }
+}
+eof
 
 # File Configuration
+MEDIA="/home/media"
+mkdir -p ${MEDIA}
+mkdir -p ${MEDIA}/TV/
+mkdir -p ${MEDIA}/Movies/
+
+# Samba/NAS Configuration
+yum -y install cifs-utils
+${SUDO} useradd -u 5000 usr_smb_core
+${SUDO} groupadd -g 6000 share_smb_core
+${SUDO} usermod -G share_smb_core -a ${PLEXUSR}
+mkdir /mnt/nas
+mkdir /mnt/nas/media
+cd /root/
+cat > creds_smb_library_core << eof
+username=NasUserName
+password=NasUserPassword
+eof
+${SUDO} chmod 0600 /root/creds_smb_library_core
+${SUDO} mount.cifs \\\\127.0.0.1\\shareName /mnt/nas/media -o credentials=/root/creds_smb_library_core,uid=5000,gid=6000
+echo "\\\\127.0.0.1\\shareName /mnt/nas/media -o credentials=/root/creds_smb_library_core,uid=5000,gid=6000" >> /etc/fstab
 
 # Firewalld Configuration
+# Note: Look into making those private only connections.
+cd  /etc/firewalld/services/
+${SUDO} systemctl stop firewalld.service
+
+## PlexMediaServer
+cat > plexmediaserver.xml << eof
+<?xml version="1.0" encoding="utf-8"?>
+<service version="1.0">
+  <short>plexmediaserver</short>
+  <description>Plex TV Media Server</description>
+  <port port="1900" protocol="udp"/>
+  <port port="5353" protocol="udp"/>
+  <port port="32400" protocol="tcp"/>
+  <port port="32410" protocol="udp"/>
+  <port port="32412" protocol="udp"/>
+  <port port="32413" protocol="udp"/>
+  <port port="32414" protocol="udp"/>
+  <port port="32469" protocol="tcp"/>
+</service>
+eof
+${SUDO} firewall-cmd --permanent --add-service=plexmediaserver
+${SUDO} firewall-cmd --permanent --zone=public --add-service=plexmediaserver
+
+## SickRage
+cat > sickrage.xml << eof
+<?xml version="1.0" encoding="utf-8"?>
+<service version="1.0">
+  <short>sickrage</short>
+  <description>SickRage TV Automation</description>
+  <port port="8081" protocol="tcp"/>
+</service>
+eof
+${SUDO} firewall-cmd --permanent --add-service=sickrage
+${SUDO} firewall-cmd --permanent --zone=public --add-service=sickrage
+
+## Transmission
+cat > transmission.xml << eof
+<?xml version="1.0" encoding="utf-8"?>
+<service version="1.0">
+  <short>transmission</short>
+  <description>Torrent Client</description>
+  <port port="9091" protocol="tcp"/>
+</service>
+eof
+${SUDO} firewall-cmd --permanent --add-service=transmission
+${SUDO} firewall-cmd --permanent --zone=public --add-service=transmission
+
+## CouchPotatoServer
+cat > couchpotatoserver.xml << eof
+<?xml version="1.0" encoding="utf-8"?>
+<service version="1.0">
+  <short>couchpotatoserver</short>
+  <description>Movie Automation</description>
+  <port port="5050" protocol="tcp"/>
+</service>
+eof
+${SUDO} firewall-cmd --permanent --add-service=couchpotatoserver
+${SUDO} firewall-cmd --permanent --zone=public --add-service=couchpotatoserver
+
+## Nginx
 ${SUDO} firewall-cmd --permanent --zone=public --add-service=http 
 ${SUDO} firewall-cmd --permanent --zone=public --add-service=https
+
+## Samba
+${SUDO} firewall-cmd --permanent --zone=public --add-service=samba
+
 ${SUDO} firewall-cmd --reload
+${SUDO} restart firewalld.service
 
 #Configure Permissions
 chown -Rf ${PLEXUSR} /opt/
