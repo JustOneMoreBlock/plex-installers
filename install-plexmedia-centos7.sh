@@ -68,76 +68,57 @@ yum -y install nginx
 cd  /etc/nginx/
 
 cat > nginx.conf << eof
-server {
-    listen 80;
-    server_name domain.net, 127.0.0.1;
-    rewrite ^ https://$http_host$request_uri? permanent;    # force redirect http to https
+user nginx;
+worker_processes auto;
+error_log /var/log/nginx/error.log;
+pid /run/nginx.pid;
+
+include /usr/share/nginx/modules/*.conf;
+
+events {
+    worker_connections 1024;
 }
 
-server {
-        listen 443;
-        #ssl on;
-        #ssl_certificate C:/nginx-1.6.3/conf/ssl/ssl-bundle.crt;        # path to ssl certificate
-        #ssl_certificate_key C:/nginx-1.6.3/conf/ssl/server.key;    # path to private key
+http {
+    log_format  main  '$remote_addr - $remote_user [$time_local] "$request" '
+                      '$status $body_bytes_sent "$http_referer" '
+                      '"$http_user_agent" "$http_x_forwarded_for"';
 
-        server_name domain.net, 127.0.0.1;
+    access_log  /var/log/nginx/access.log  main;
 
-        proxy_set_header X-Forwarded-For $remote_addr;
+    sendfile            on;
+    tcp_nopush          on;
+    tcp_nodelay         on;
+    keepalive_timeout   65;
+    types_hash_max_size 2048;
 
-        add_header Strict-Transport-Security "max-age=31536000; includeSubdomains";
-        server_tokens off;
+    include             /etc/nginx/mime.types;
+    default_type        application/octet-stream;
 
+    include /etc/nginx/conf.d/*.conf;
 
-        location = / {
-            rewrite ^ https://$http_host$request_uri/cloud permanent; #root access redirects to cloud
+    server {
+        listen       80 default_server;
+        listen       [::]:80 default_server;
+        server_name  _;
+
+        location / {
+        proxy_pass http://localhost:32400/web/;
         }
 
-        location /plex {
-            proxy_pass http://127.0.0.1:32400/web/;
-            proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        location /web {
+        proxy_pass http://localhost:32400;
         }
 
-        location /couchpotato {
-            proxy_pass http://127.0.0.1:5050;
-            proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        error_page 404 /404.html;
+            location = /40x.html {
         }
 
-        location /cloud {
-            fastcgi_pass    127.0.0.1:8000;
-            fastcgi_param   SCRIPT_FILENAME     $document_root$fastcgi_script_name;
-            fastcgi_param   PATH_INFO           $fastcgi_script_name;
-
-            fastcgi_param   SERVER_PROTOCOL        $server_protocol;
-            fastcgi_param   QUERY_STRING        $query_string;
-            fastcgi_param   REQUEST_METHOD      $request_method;
-            fastcgi_param   CONTENT_TYPE        $content_type;
-            fastcgi_param   CONTENT_LENGTH      $content_length;
-            fastcgi_param   SERVER_ADDR         $server_addr;
-            fastcgi_param   SERVER_PORT         $server_port;
-            fastcgi_param   SERVER_NAME         $server_name;
-            fastcgi_param   HTTPS               on;
-            fastcgi_param   HTTP_SCHEME         https;
-
-            access_log      logs/seahub.access.log;
-            error_log       logs/seahub.error.log;
+        error_page 500 502 503 504 /50x.html;
+            location = /50x.html {
         }
+    }
 
-        location /seafhttp {
-            rewrite ^/seafhttp(.*)$ $1 break;
-            proxy_pass http://127.0.0.1:8082;
-            client_max_body_size 0;
-            proxy_connect_timeout  36000s;
-            proxy_read_timeout  36000s;
-        }
-
-        location /seafmedia {
-         rewrite ^/seafmedia(.*)$ /media$1 break;
-         root C:/Seafile/seafile-server-4.0.6/seahub;
-        }
 }
 eof
 
